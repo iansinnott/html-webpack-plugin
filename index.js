@@ -13,6 +13,8 @@ var LoaderTargetPlugin = require('webpack/lib/LoaderTargetPlugin');
 var LibraryTemplatePlugin = require('webpack/lib/LibraryTemplatePlugin');
 var SingleEntryPlugin = require('webpack/lib/SingleEntryPlugin');
 
+const dir = (obj, params) => console.dir(obj, { colors: true, depth: 6 });
+
 function HtmlWebpackPlugin(options) {
   // Default options
   this.options = _.extend({
@@ -27,21 +29,41 @@ function HtmlWebpackPlugin(options) {
     excludeChunks: [],
     title: 'Webpack App'
   }, options);
+
+  // The passed this.options.template can be a relative filepath such as
+  // './template'. That's fine. It will be expanded into an absoulte filepath
+  // below using path.resolve
+  console.log('initial',this.options.template);
+
   // If the template doesn't use a loader use the blueimp template loader
   if(this.options.template.indexOf('!') === -1) {
     this.options.template = require.resolve('./loader.js') + '!' + path.resolve(this.options.template);
   }
+
+  // The above code sets the default loader if none is set and resolves the path
+  // to the template.
+  console.log('after',this.options.template);
+
   // Resolve template path
+  // What this really seems to do is resolve the filepath to the template,
+  // regardless of loaders:
+  // template: '../../loader.js!./template.html' -> '../../loader.js!/Users/ian/dev/clones/html-webpack-plugin/examples/default/template.html'
   this.options.template = this.options.template.replace(
     /(\!)([^\/\\][^\!\?]+|[^\/\\!?])($|\?.+$)/,
     function(match, prefix, filepath, postfix) {
+      // console.log('args', match || '<match>', prefix || '<prefix>', filepath || '<filepath>', postfix || '<postfix>');
       return prefix + path.resolve(filepath) + postfix;
     });
+  console.log('final',this.options.template);
 }
 
 HtmlWebpackPlugin.prototype.apply = function(compiler) {
   var self = this;
   var compilationPromise;
+
+  // Not sure why we do this since it seems that self.context and
+  // compiler.context are the same... maybe there's an edge case I don't know
+  // about
   self.context = compiler.context;
 
   compiler.plugin('make', function(compilation, callback) {
@@ -50,12 +72,18 @@ HtmlWebpackPlugin.prototype.apply = function(compiler) {
       .catch(function(err) {
         return new Error(err);
       })
+      .then((result) => {
+        console.log('Template compiled');
+        // dir(result)
+        return result;
+      })
       .finally(callback);
   });
 
   compiler.plugin('emit', function(compilation, callback) {
     // Get all chunks
     var chunks = self.filterChunks(compilation.getStats().toJson(), self.options.chunks, self.options.excludeChunks);
+
     // Get assets
     var assets = self.htmlWebpackPluginAssets(compilation, chunks);
     Promise.resolve()
@@ -80,18 +108,27 @@ HtmlWebpackPlugin.prototype.apply = function(compiler) {
         if (self.options.templateContent) {
           return self.options.templateContent;
         }
+        console.log('resultAsset');
+        dir(resultAsset)
         // Once everything is compiled evaluate the html factory
         // and replace it with its content
         return self.evaluateCompilationResult(compilation, resultAsset);
       })
       // Execute the template
       .then(function(compilationResult) {
+        console.log('compilationResult');
+        dir(compilationResult)
         // If the loader result is a function execute it to retreive the html
         // otherwise use the returned html
         return typeof compilationResult !== 'function' ? compilationResult :
           self.executeTemplate(compilationResult, chunks, assets, compilation);
       })
       .then(function(html) {
+        console.log('html');
+        dir(html)
+
+        // console.log('compilation.assets');
+        // console.log(compilation.assets[self.options.filename].source())
         // Add the stylesheets, scripts and so on to the resulting html
         return self.postProcessHtml(html, assets);
       })
@@ -103,6 +140,8 @@ HtmlWebpackPlugin.prototype.apply = function(compiler) {
         return errorMessage;
       })
       .then(function(html) {
+        console.log('finalHtml');
+        dir(html)
         // Replace the compilation result with the evaluated html code
         compilation.assets[self.options.filename] = {
           source: function() {
@@ -131,23 +170,55 @@ HtmlWebpackPlugin.prototype.getCompilerName = function() {
  * and returns a promise of the result asset object.
  */
 HtmlWebpackPlugin.prototype.compileTemplate = function(template, outputFilename, compilation) {
+  // template will be the loader + resolved template path as defined in the
+  // constructor
+  // outputFilename will be a simple filename string such as index.html
+  // copmilation is the actual compilation as you'd expect
+
   // The entry file is just an empty helper as the dynamic template
   // require is added in "loader.js"
   var outputOptions = {
     filename: outputFilename,
     publicPath: compilation.outputOptions.publicPath
   };
+  console.log(template, '|', outputFilename, '|', '<compilation>');
+
+  // outputOptions.publicPath is taken directly from the webpack config of the
+  // user
+  // dir(outputOptions);
+
   // Create an additional child compiler which takes the template
   // and turns it into an Node.JS html factory.
   // This allows us to use loaders during the compilation
   var compilerName = this.getCompilerName();
+
+  console.log(`"${compilerName}"`);
+
   var childCompiler = compilation.createChildCompiler(compilerName, outputOptions);
   childCompiler.apply(
-    new NodeTemplatePlugin(outputOptions),
-    new NodeTargetPlugin(),
-    new LibraryTemplatePlugin('HTML_WEBPACK_PLUGIN_RESULT', 'var'),
+    // Not sure...
+    // new NodeTemplatePlugin(outputOptions),
+
+    // Not sure...
+    // new NodeTargetPlugin(),
+
+    // This places a line at the result of the compilation
+    // var HTML_WEBPACK_PLUGIN_RESULT =
+    // That seems to be how the module would be placed into a "Library" of the
+    // name HTML_WEBPACK_PLUGIN_RESULT. 'var' seems to be the library export
+    // strategy to use. Anyway, this line is later forcably removed so i'm not
+    // clear on why it is included in the first place.
+    // new LibraryTemplatePlugin('HTML_WEBPACK_PLUGIN_RESULT', 'var'),
+
+    // Important, pass in the template to compile
     new SingleEntryPlugin(this.context, template),
-    new LoaderTargetPlugin('node'),
+
+    // Not sure...
+    // new LoaderTargetPlugin('node'),
+
+    // A simple define plugin. However, it's not clear to me how this ends up
+    // in the main bundle as well since it would seem we are only applying this
+    // to the child compiler... hm. Oh well, go with it for now.
     new webpack.DefinePlugin({ HTML_WEBPACK_PLUGIN : 'true' })
   );
 
@@ -186,11 +257,18 @@ HtmlWebpackPlugin.prototype.evaluateCompilationResult = function(compilation, co
     return Promise.reject('The child compilation didn\'t provide a result');
   }
   var source = compilationResult.source();
+
+  console.log('raw source', '\n', source);
   // The LibraryTemplatePlugin stores the template result in a local variable.
   // To extract the result during the evaluation this part has to be removed.
-  source = source.replace('var HTML_WEBPACK_PLUGIN_RESULT =', '');
+  //
+  // See my note above. it doesn't seem necessary to use the librarytemplate
+  // plugin which makes this line also unecessary
+  // source = source.replace('var HTML_WEBPACK_PLUGIN_RESULT =', '');
 
-  // Evaluate code and cast to string
+  // Evaluate the source to either a function or a string. Generally this should
+  // probably evaluate to the template function you want to call to get the
+  // final markup.
   var newSource;
   try {
     newSource = vm.runInThisContext(source);

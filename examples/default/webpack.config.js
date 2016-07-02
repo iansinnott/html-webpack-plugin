@@ -3,7 +3,7 @@ module.exports = {
   entry: './example.js',
   output: {
     path: __dirname + '/dist',
-    publicPath: '',
+    publicPath: '/sploosh/town',
     filename: 'bundle.js'
   },
   module: {
@@ -13,6 +13,8 @@ module.exports = {
     ]
   },
   plugins: [
-    new HtmlWebpackPlugin()
+    new HtmlWebpackPlugin({
+      template: '../../loader.js!./template.html',
+    })
   ]
 };
